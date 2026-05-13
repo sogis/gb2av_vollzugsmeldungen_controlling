@@ -1,0 +1,602 @@
+---
+title: "Vollzugsmeldung: Controlling"
+format:
+  dashboard:
+    orientation: rows
+    theme: cosmo
+    include-in-header:
+      text: |
+        <style>
+        .dashboard-filter {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          margin-bottom: 0.75rem;
+        }
+        .dashboard-filter label {
+          font-weight: 600;
+          margin-bottom: 0;
+          white-space: nowrap;
+        }
+        .dashboard-filter-select {
+          min-width: 220px;
+          padding: 0.35rem 0.5rem;
+        }
+        </style>
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+# Pakete:
+# install.packages(c("tidyverse", "lubridate", "plotly", "reactable", "scales", "bslib", "bsicons", "htmltools", "htmlwidgets", "jsonlite"))
+
+library(tidyverse)
+library(lubridate)
+library(plotly)
+library(reactable)
+library(scales)
+library(bslib)
+library(bsicons)
+library(htmltools)
+library(htmlwidgets)
+library(jsonlite)
+
+csv_file <- "controlling_gb2av_vollzugsmeldung_delta_202605121757.csv"
+stichtag <- as.Date("2018-01-01")
+
+raw <- readr::read_csv(
+  csv_file,
+  col_types = cols(
+    t_id = col_integer(),
+    t_ili_tid = col_character(),
+    mutationsnummer = col_character(),
+    nbident = col_character(),
+    gb_status = col_character(),
+    gb_bemerkungen = col_character(),
+    gb_grundbucheintrag = col_date(),
+    gb_tagebucheintrag = col_date(),
+    gb_tagebuchbeleg = col_character(),
+    av_beschreibung = col_character(),
+    av_gueltigkeit = col_character(),
+    av_gueltigereintrag = col_date(),
+    av_gbeintrag = col_date(),
+    av_firma = col_character(),
+    datasetname = col_character(),
+    grundstuecksart = col_character(),
+    delta = col_integer()
+  )
+)
+
+# Auswertung ab Stichtag.
+# Falls das Dashboard wirklich alle Records zeigen soll: diese Filterzeile entfernen.
+daten <- raw |>
+  filter(gb_grundbucheintrag > stichtag) |>
+  mutate(
+    fristklasse = case_when(
+      delta <= 7 ~ "≤ 7 Tage",
+      delta <= 14 ~ "8–14 Tage",
+      delta <= 30 ~ "15–30 Tage",
+      delta <= 60 ~ "31–60 Tage",
+      TRUE ~ "> 60 Tage"
+    ),
+    fristklasse = factor(
+      fristklasse,
+      levels = c("≤ 7 Tage", "8–14 Tage", "15–30 Tage", "31–60 Tage", "> 60 Tage")
+    ),
+    innerhalb_1_woche = delta <= 7,
+    nicht_innerhalb_1_woche = delta > 7,
+    nicht_innerhalb_2_wochen = delta > 14,
+    monat = floor_date(gb_grundbucheintrag, "month")
+  )
+
+summarise_firma <- function(x) {
+  x |>
+    group_by(av_firma) |>
+    summarise(
+      total = n(),
+      innerhalb_1_woche = sum(innerhalb_1_woche, na.rm = TRUE),
+      nicht_innerhalb_1_woche = sum(nicht_innerhalb_1_woche, na.rm = TRUE),
+      nicht_innerhalb_2_wochen = sum(nicht_innerhalb_2_wochen, na.rm = TRUE),
+      anteil_innerhalb_1_woche = innerhalb_1_woche / total,
+      median_delta = median(delta, na.rm = TRUE),
+      mean_delta = mean(delta, na.rm = TRUE),
+      max_delta = max(delta, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    arrange(desc(nicht_innerhalb_2_wochen), desc(nicht_innerhalb_1_woche), desc(total))
+}
+
+stand <- max(daten$gb_grundbucheintrag, na.rm = TRUE)
+
+# Beobachtungsfenster für die Controlling-Tabelle.
+# Die Fenster sind relativ zum jüngsten GB-Grundbucheintrag im CSV definiert,
+# nicht relativ zum Render-Datum.
+summary_firma <- summarise_firma(daten)
+summary_firma_letzter_monat <- daten |>
+  filter(gb_grundbucheintrag >= stand %m-% months(1)) |>
+  summarise_firma()
+summary_firma_letzte_6_monate <- daten |>
+  filter(gb_grundbucheintrag >= stand %m-% months(6)) |>
+  summarise_firma()
+
+firma_choices <- c("Alle Firmen", sort(unique(daten$av_firma)))
+
+make_select <- function(id, label, choices, values = choices, onchange = NULL) {
+  htmltools::tags$div(
+    class = "dashboard-filter",
+    htmltools::tags$label(`for` = id, label),
+    htmltools::tags$select(
+      id = id,
+      class = "dashboard-filter-select",
+      onchange = onchange,
+      purrr::map2(values, choices, ~ htmltools::tags$option(value = .x, .y))
+    )
+  )
+}
+```
+
+# Übersicht
+
+## Row {height=22%}
+
+```{r}
+bslib::value_box(
+  title = paste0("Total seit ", format(stichtag, "%d.%m.%Y")),
+  value = nrow(daten),
+  showcase = bsicons::bs_icon("database"),
+  theme = "primary"
+)
+```
+
+```{r}
+bslib::value_box(
+  title = "Innerhalb 1 Woche",
+  value = sum(daten$innerhalb_1_woche, na.rm = TRUE),
+  showcase = bsicons::bs_icon("check-circle"),
+  theme = "success"
+)
+```
+
+```{r}
+bslib::value_box(
+  title = "Nicht innerhalb 1 Woche",
+  value = sum(daten$nicht_innerhalb_1_woche, na.rm = TRUE),
+  showcase = bsicons::bs_icon("exclamation-triangle"),
+  theme = "warning"
+)
+```
+
+```{r}
+bslib::value_box(
+  title = "Nicht innerhalb 2 Wochen",
+  value = sum(daten$nicht_innerhalb_2_wochen, na.rm = TRUE),
+  showcase = bsicons::bs_icon("x-circle"),
+  theme = "danger"
+)
+```
+
+## Row
+
+```{r}
+#| title: "Vollzugsmeldungen pro Firma"
+
+p <- summary_firma |>
+  mutate(av_firma = fct_reorder(av_firma, total)) |>
+  ggplot(aes(
+    x = av_firma,
+    y = total,
+    text = paste0(
+      "Firma: ", av_firma,
+      "<br>Total: ", total,
+      "<br>≤ 7 Tage: ", innerhalb_1_woche,
+      "<br>> 7 Tage: ", nicht_innerhalb_1_woche,
+      "<br>> 14 Tage: ", nicht_innerhalb_2_wochen,
+      "<br>Median Delta: ", median_delta
+    )
+  )) +
+  geom_col() +
+  coord_flip() +
+  labs(x = NULL, y = "Anzahl") +
+  theme_minimal(base_size = 13)
+
+ggplotly(p, tooltip = "text")
+```
+
+```{r}
+#| title: "Controlling-Tabelle"
+
+make_controlling_table <- function(x) {
+  x <- x |> arrange(av_firma)
+
+  reactable(
+    x,
+    defaultPageSize = 10,
+    defaultSorted = list(av_firma = "asc"),
+    columns = list(
+      av_firma = colDef(name = "Firma", minWidth = 250),
+      total = colDef(name = "Total", align = "right"),
+      innerhalb_1_woche = colDef(name = "≤ 7 Tage", align = "right"),
+      nicht_innerhalb_1_woche = colDef(name = "> 7 Tage", align = "right"),
+      nicht_innerhalb_2_wochen = colDef(name = "> 14 Tage", align = "right"),
+      anteil_innerhalb_1_woche = colDef(
+        name = "Anteil ≤ 7 Tage",
+        align = "right",
+        format = colFormat(percent = TRUE, digits = 1)
+      ),
+      median_delta = colDef(name = "Median Delta", align = "right"),
+      mean_delta = colDef(
+        name = "Ø Delta",
+        align = "right",
+        format = colFormat(digits = 1)
+      ),
+      max_delta = colDef(name = "Max Delta", align = "right")
+    )
+  )
+}
+
+htmltools::tagList(
+  make_select(
+    id = "controlling-window-select",
+    label = "Beobachtungsfenster",
+    choices = c("Alles", "Letzter Monat", "Letzte 6 Monate"),
+    values = c("all", "month", "sixmonths"),
+    onchange = "setControllingWindow(this.value)"
+  ),
+  htmltools::tags$div(id = "controlling-table-all", make_controlling_table(summary_firma)),
+  htmltools::tags$div(
+    id = "controlling-table-month",
+    style = "display: none;",
+    make_controlling_table(summary_firma_letzter_monat)
+  ),
+  htmltools::tags$div(
+    id = "controlling-table-sixmonths",
+    style = "display: none;",
+    make_controlling_table(summary_firma_letzte_6_monate)
+  ),
+  htmltools::tags$script(htmltools::HTML(
+    paste0(
+      "function setControllingWindow(value) {\n",
+      "  var ids = ['all', 'month', 'sixmonths'];\n",
+      "  ids.forEach(function(id) {\n",
+      "    var el = document.getElementById('controlling-table-' + id);\n",
+      "    if (el) { el.style.display = (id === value) ? 'block' : 'none'; }\n",
+      "  });\n",
+      "}\n"
+    )
+  ))
+)
+```
+
+# Fristen
+
+## Row
+
+```{r}
+#| title: "Fristklassen pro Firma"
+
+frist_firma <- daten |>
+  count(av_firma, fristklasse, name = "anzahl")
+
+p <- frist_firma |>
+  ggplot(aes(
+    x = av_firma,
+    y = anzahl,
+    fill = fristklasse,
+    text = paste0("Firma: ", av_firma, "<br>Frist: ", fristklasse, "<br>Anzahl: ", anzahl)
+  )) +
+  geom_col() +
+  coord_flip() +
+  labs(x = NULL, y = "Anzahl", fill = "Fristklasse") +
+  theme_minimal(base_size = 13)
+
+ggplotly(p, tooltip = "text")
+```
+
+```{r}
+#| title: "Verteilung Delta in Tagen"
+
+hist_groups <- firma_choices
+hist_group_ids <- seq_along(hist_groups)
+
+hist_plot <- plot_ly()
+
+for (i in hist_group_ids) {
+  firma <- hist_groups[[i]]
+
+  hist_data <- if (firma == "Alle Firmen") {
+    daten
+  } else {
+    daten |> filter(av_firma == firma)
+  }
+
+  hist_plot <- hist_plot |>
+    add_histogram(
+      x = hist_data$delta,
+      name = firma,
+      xbins = list(start = 0, size = 5),
+      visible = i == 1,
+      hovertemplate = paste0(
+        "Firma: ", firma,
+        "<br>Delta: %{x} Tage",
+        "<br>Anzahl: %{y}",
+        "<extra></extra>"
+      )
+    )
+}
+
+hist_plot <- hist_plot |>
+  layout(
+    bargap = 0.05,
+    margin = list(t = 12),
+    xaxis = list(title = "Delta in Tagen"),
+    yaxis = list(title = "Anzahl"),
+    showlegend = FALSE
+  )
+
+hist_js <- "
+function(el, x) {
+  var select = document.getElementById('hist-firma-select');
+  if (!select) return;
+
+  function update() {
+    var selected = parseInt(select.value, 10);
+    var visible = x.data.map(function(_, idx) { return (idx + 1) === selected; });
+    Plotly.restyle(el, { visible: visible });
+  }
+
+  select.addEventListener('change', update);
+  update();
+}
+"
+
+htmltools::tagList(
+  make_select(
+    id = "hist-firma-select",
+    label = "Firma",
+    choices = hist_groups,
+    values = hist_group_ids
+  ),
+  htmlwidgets::onRender(hist_plot, hist_js)
+)
+```
+
+# Zeitverlauf
+
+## Row
+
+```{r}
+#| title: "Monatlicher Verlauf nach Fristklasse"
+
+zeit_basis <- bind_rows(
+  daten |> mutate(firma_filter = "Alle Firmen"),
+  daten |> mutate(firma_filter = av_firma)
+) |>
+  count(firma_filter, monat, fristklasse, name = "anzahl") |>
+  mutate(monat_label = format(monat, "%Y-%m"))
+
+frist_levels <- levels(daten$fristklasse)
+zeit_groups <- firma_choices
+zeit_group_ids <- seq_along(zeit_groups)
+
+zeit_plot <- plot_ly()
+trace_group_id <- integer(0)
+
+for (firma_idx in zeit_group_ids) {
+  firma <- zeit_groups[[firma_idx]]
+
+  for (frist in frist_levels) {
+    trace_group_id <- c(trace_group_id, firma_idx)
+
+    trace_data <- zeit_basis |>
+      filter(firma_filter == firma, fristklasse == frist) |>
+      arrange(monat)
+
+    zeit_plot <- zeit_plot |>
+      add_bars(
+        data = trace_data,
+        x = ~monat,
+        y = ~anzahl,
+        name = frist,
+        visible = firma_idx == 1,
+        legendgroup = frist,
+        showlegend = TRUE,
+        text = ~paste0(
+          "Firma: ", firma_filter,
+          "<br>Monat: ", monat_label,
+          "<br>Frist: ", fristklasse,
+          "<br>Anzahl: ", anzahl
+        ),
+        hoverinfo = "text"
+      )
+  }
+}
+
+zeit_plot <- zeit_plot |>
+  layout(
+    barmode = "stack",
+    margin = list(t = 12),
+    xaxis = list(title = ""),
+    yaxis = list(title = "Anzahl"),
+    legend = list(title = list(text = "Fristklasse"))
+  )
+
+zeit_trace_group_json <- jsonlite::toJSON(trace_group_id, auto_unbox = TRUE)
+zeit_js <- paste0("
+function(el, x) {
+  var select = document.getElementById('zeit-firma-select');
+  var traceGroups = ", zeit_trace_group_json, ";
+  if (!select) return;
+
+  function update() {
+    var selected = parseInt(select.value, 10);
+    var visible = traceGroups.map(function(groupId) { return groupId === selected; });
+    Plotly.restyle(el, { visible: visible });
+  }
+
+  select.addEventListener('change', update);
+  update();
+}
+")
+
+htmltools::tagList(
+  make_select(
+    id = "zeit-firma-select",
+    label = "Firma",
+    choices = zeit_groups,
+    values = zeit_group_ids
+  ),
+  htmlwidgets::onRender(zeit_plot, zeit_js)
+)
+```
+
+```{r}
+#| title: "Verspätete Meldungen pro Monat"
+
+verspaetet_basis <- bind_rows(
+  daten |> mutate(firma_filter = "Alle Firmen"),
+  daten |> mutate(firma_filter = av_firma)
+) |>
+  group_by(firma_filter, monat) |>
+  summarise(
+    total = n(),
+    nicht_innerhalb_1_woche = sum(delta > 7, na.rm = TRUE),
+    nicht_innerhalb_2_wochen = sum(delta > 14, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  pivot_longer(
+    cols = c(nicht_innerhalb_1_woche, nicht_innerhalb_2_wochen),
+    names_to = "kennzahl",
+    values_to = "anzahl"
+  ) |>
+  mutate(
+    kennzahl = recode(
+      kennzahl,
+      nicht_innerhalb_1_woche = "> 7 Tage",
+      nicht_innerhalb_2_wochen = "> 14 Tage"
+    ),
+    monat_label = format(monat, "%Y-%m")
+  ) |>
+  arrange(firma_filter, kennzahl, monat)
+
+kennzahl_levels <- c("> 7 Tage", "> 14 Tage")
+versp_groups <- firma_choices
+versp_group_ids <- seq_along(versp_groups)
+
+versp_plot <- plot_ly()
+trace_group_id <- integer(0)
+
+for (firma_idx in versp_group_ids) {
+  firma <- versp_groups[[firma_idx]]
+
+  for (kennzahl_item in kennzahl_levels) {
+    trace_group_id <- c(trace_group_id, firma_idx)
+
+    trace_data <- verspaetet_basis |>
+      filter(firma_filter == firma, kennzahl == kennzahl_item) |>
+      arrange(monat)
+
+    versp_plot <- versp_plot |>
+      add_trace(
+        data = trace_data,
+        x = ~monat,
+        y = ~anzahl,
+        type = "scatter",
+        mode = "lines+markers",
+        name = kennzahl_item,
+        visible = firma_idx == 1,
+        legendgroup = kennzahl_item,
+        showlegend = TRUE,
+        text = ~paste0(
+          "Firma: ", firma_filter,
+          "<br>Monat: ", monat_label,
+          "<br>", kennzahl, ": ", anzahl
+        ),
+        hoverinfo = "text"
+      )
+  }
+}
+
+versp_plot <- versp_plot |>
+  layout(
+    margin = list(t = 12),
+    xaxis = list(title = ""),
+    yaxis = list(title = "Anzahl"),
+    legend = list(title = list(text = ""))
+  )
+
+versp_trace_group_json <- jsonlite::toJSON(trace_group_id, auto_unbox = TRUE)
+versp_js <- paste0("
+function(el, x) {
+  var select = document.getElementById('versp-firma-select');
+  var traceGroups = ", versp_trace_group_json, ";
+  if (!select) return;
+
+  function update() {
+    var selected = parseInt(select.value, 10);
+    var visible = traceGroups.map(function(groupId) { return groupId === selected; });
+    Plotly.restyle(el, { visible: visible });
+  }
+
+  select.addEventListener('change', update);
+  update();
+}
+")
+
+htmltools::tagList(
+  make_select(
+    id = "versp-firma-select",
+    label = "Firma",
+    choices = versp_groups,
+    values = versp_group_ids
+  ),
+  htmlwidgets::onRender(versp_plot, versp_js)
+)
+```
+
+# Details
+
+## Row
+
+```{r}
+#| title: "Einzeldatensätze"
+
+reactable(
+  daten |>
+    transmute(
+      mutationsnummer,
+      nbident,
+      firma = av_firma,
+      grundbucheintrag = gb_grundbucheintrag,
+      tagebucheintrag = gb_tagebucheintrag,
+      av_gueltigereintrag,
+      av_gbeintrag,
+      delta,
+      fristklasse,
+      grundstuecksart,
+      av_beschreibung,
+      datasetname
+    ) |>
+    arrange(desc(delta), desc(grundbucheintrag)),
+  searchable = TRUE,
+  filterable = TRUE,
+  defaultPageSize = 20,
+  highlight = TRUE,
+  columns = list(
+    mutationsnummer = colDef(name = "Mutation", minWidth = 100),
+    nbident = colDef(name = "NBIdent", minWidth = 130),
+    firma = colDef(name = "Firma", minWidth = 240),
+    grundbucheintrag = colDef(name = "GB-Grundbucheintrag", minWidth = 150),
+    tagebucheintrag = colDef(name = "GB-Tagebucheintrag", minWidth = 150),
+    av_gueltigereintrag = colDef(name = "AV-Gültigereintrag", minWidth = 150),
+    av_gbeintrag = colDef(name = "AV-GB-Eintrag", minWidth = 130),
+    delta = colDef(name = "Delta", align = "right"),
+    fristklasse = colDef(name = "Fristklasse", minWidth = 110),
+    grundstuecksart = colDef(name = "Grundstücksart", minWidth = 150),
+    av_beschreibung = colDef(name = "Beschreibung", minWidth = 250),
+    datasetname = colDef(name = "Dataset", minWidth = 280)
+  )
+)
+```
