@@ -44,7 +44,7 @@ library(htmltools)
 library(htmlwidgets)
 library(jsonlite)
 
-csv_file <- "controlling_gb2av_vollzugsmeldung_delta_202605121757.csv"
+csv_file <- "controlling_gb2av_vollzugsmeldung_delta_202611101436.csv"
 stichtag <- as.Date("2018-01-01")
 
 raw <- readr::read_csv(
